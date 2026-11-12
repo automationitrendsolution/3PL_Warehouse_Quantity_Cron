@@ -1,0 +1,16 @@
+# `uv sync` in this directory creates .venv/ from uv.lock - the interpreter run_3pl_warehouse.sh
+# uses. requirements.txt lists the same packages for hosts without uv; change both together.
+[project]
+name = "third-party-warehouse-quantity"
+version = "1.0.0"
+description = "3PL portals (Tactical, GTI, Ideal/Extensiv, TheFbaPrep) -> 3PL_Warehouse_Quantity (weekly cron job)"
+requires-python = ">=3.10"
+dependencies = [
+    "playwright>=1.50",
+    "PyMySQL>=1.1.0",
+    "rich>=13.7",
+]
+
+[tool.uv]
+# A cron job, not an installable package: sync the dependencies only.
+package = false

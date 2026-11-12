@@ -1,0 +1,13 @@
+# Credentials and saved portal sessions (cookies / login tokens) - never commit.
+.env
+.env.*
+!.env.example
+state/
+
+# Runtime artefacts
+logs/
+.venv/
+*.lock
+!uv.lock
+__pycache__/
+*.py[cod]
