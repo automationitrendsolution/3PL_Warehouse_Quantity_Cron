@@ -46,9 +46,34 @@ CREATE TABLE IF NOT EXISTS `{TABLE}` (
 
 
 def connect(s: Settings):
-    return pymysql.connect(host=s.db_host, port=s.db_port, user=s.db_user, password=s.db_password,
-                           database=s.db_name, charset="utf8mb4", autocommit=False,
+    """TLS is REQUIRED: the database is reached over the internet, so a server (or a man in the
+    middle) offering plain text is refused rather than sending the password unencrypted. With
+    WAREHOUSE_DB_SSL_CA set, the server certificate is verified against that CA as well."""
+    ssl = {"ca": s.db_ssl_ca} if s.db_ssl_ca else {"check_hostname": False}
+    conn = pymysql.connect(host=s.db_host, port=s.db_port, user=s.db_user, password=s.db_password,
+                           database=s.db_name, charset="utf8mb4", autocommit=False, ssl=ssl,
                            connect_timeout=20, read_timeout=300, write_timeout=300)
+    with conn.cursor() as cur:
+        cur.execute("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
+        row = cur.fetchone()
+    if not row or not row[1]:
+        conn.close()
+        raise RuntimeError("database connection is not encrypted - refusing to use it")
+    return conn
+
+
+def stocked_count(s: Settings, column: str, markets: tuple[str, ...]) -> int:
+    """Rows this 3PL currently has stock on (non-zero), for the drop guard."""
+    if column not in QTY_COLUMNS:
+        raise ValueError(column)
+    conn = connect(s)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM `{TABLE}` WHERE marketplace IN "
+                        f"({', '.join(['%s'] * len(markets))}) AND `{column}` <> 0", markets)
+            return int(cur.fetchone()[0])
+    finally:
+        conn.close()
 
 
 def ensure_table(s: Settings) -> None:

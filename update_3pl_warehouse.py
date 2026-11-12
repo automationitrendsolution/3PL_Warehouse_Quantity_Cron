@@ -43,6 +43,8 @@ def main() -> int:
     ap.add_argument("--logs", nargs="?", const=15, type=int, metavar="N",
                     help="show the last N runs (default 15) and the last run's log, then exit")
     ap.add_argument("--plain", action="store_true", help="plain log lines even on a terminal")
+    ap.add_argument("--allow-big-drop", action="store_true",
+                    help="write even if a portal now shows under half the stocked products")
     args = ap.parse_args()
 
     if args.logs is not None:
@@ -54,7 +56,8 @@ def main() -> int:
         print(f"unknown portal {unknown} - use {', '.join(SCRAPERS)}", file=sys.stderr)
         return 2
 
-    view = ui.UI(sites, "dry-run" if args.dry_run else "live", force_plain=args.plain)
+    mode = "create-table" if args.create_table else "dry-run" if args.dry_run else "live"
+    view = ui.UI(sites, mode, force_plain=args.plain)
     load_env()
     try:
         s = from_env([] if args.create_table else sites, need_db=not args.dry_run)
@@ -83,7 +86,9 @@ def main() -> int:
     with view, sync_playwright() as p:
         browser = p.chromium.launch(
             channel="chromium", headless=s.headless,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox",
+            # Chromium's sandbox stays ON (it isolates a compromised page from this machine);
+            # it only works as a normal user, so running as root is refused in the wrapper.
+            args=["--disable-blink-features=AutomationControlled",
                   "--disable-http2"])  # GTI's server drops HTTP/2 streams
         for site in sites:
             mod = SCRAPERS[site]
@@ -102,6 +107,15 @@ def main() -> int:
                     view.log(f"{len(res.non_asin)} product(s) have no ASIN in the SKU - kept under "
                              f"their own code (EAN / FNSKU / SKU)")
                 written = None
+                if not args.dry_run and not args.allow_big_drop:
+                    # A broken / tampered page that lists far fewer products must not zero the
+                    # stock of everything else: refuse when stocked products fall by > half.
+                    before = db.stocked_count(s, mod.COLUMN, mod.MARKETS)
+                    after = sum(1 for q in res.qty.values() if q)
+                    if before >= 20 and after < before * 0.5:
+                        raise ScrapeError(f"only {after} products with stock vs {before} stored - "
+                                          f"looks like a broken page, not writing (re-run with "
+                                          f"--allow-big-drop if this is real)")
                 if not args.dry_run:
                     view.log("writing to the database")
                     written = db.apply(s, mod.COLUMN, mod.MARKETS, res.qty, view.log)

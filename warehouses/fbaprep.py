@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import re
 
-from .common import (Result, ScrapeError, asin_from, dump, goto, logged_in, product_id, visible,
+from .common import (assert_host, Result, ScrapeError, asin_from, dump, goto, logged_in, product_id, visible,
                      wait_quiet)
 
 SITE = "fbaprep"
+LOGIN_HOSTS = ("thefbaprep.com",)  # credentials are only ever typed on these (https)
 COLUMN = "fullfilwave_qty"
 MARKETS = ("UK", "DE")
 BASE = "https://thefbaprep.com"
@@ -38,6 +39,7 @@ def market_of(text: str, default: str) -> str:
 def login(page, creds, log=print) -> None:
     log("  logging in")
     goto(page, LOGIN_URL, log)
+    assert_host(page, LOGIN_HOSTS, SITE)
     page.locator('input[name="Users[email]"]').fill(creds.username)
     page.locator('input[name="Users[password]"]').fill(creds.password)
     page.locator(f"{LOGIN_FORM} button[type=submit]").click()

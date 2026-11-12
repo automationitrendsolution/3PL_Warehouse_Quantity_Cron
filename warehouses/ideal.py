@@ -19,9 +19,10 @@ from __future__ import annotations
 import json
 import re
 
-from .common import goto, logged_in, Result, ScrapeError, dump, norm, visible, wait_quiet
+from .common import assert_host, goto, logged_in, Result, ScrapeError, dump, norm, visible, wait_quiet
 
 SITE = "ideal"
+LOGIN_HOSTS = ("app.extensiv.com",)  # credentials are only ever typed on these (https)
 COLUMN = "ideal_qty"
 MARKETS = ("UK",)
 HUB_URL = "https://app.extensiv.com/hub/landing"
@@ -41,6 +42,7 @@ def _needs_login(page) -> bool:
 def login(page, creds, log=print) -> None:
     log("  logging in")
     page.locator(EMAIL_SEL).first.wait_for(timeout=30000)
+    assert_host(page, LOGIN_HOSTS, SITE)
     page.locator(EMAIL_SEL).first.fill(creds.username)
     if not visible(page, PASSWORD_SEL):  # two-step form: e-mail first, then password
         page.get_by_role("button", name=re.compile(r"next|continue|sign in|log in", re.I)).first.click()

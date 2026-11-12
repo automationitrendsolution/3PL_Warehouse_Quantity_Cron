@@ -7,6 +7,7 @@ touching the file. Nothing here is ever printed in clear: `Settings.describe()` 
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,11 +19,27 @@ class ConfigError(Exception):
     """A setting is missing or malformed - exit status 2, nothing is fetched or written."""
 
 
+def mask(user: str) -> str:
+    """'jane.doe@example.com' -> 'ja***@example.com', 'warehouse1' -> 'wa***1' - logs never hold a
+    full login name."""
+    if not user:
+        return ""
+    name, at, domain = user.partition("@")
+    shown = name[:2] + "***" + ("" if at else name[-1:] if len(name) > 3 else "")
+    return shown + (at + domain if at else "")
+
+
 def load_env(path: str | Path = JOB_DIR / ".env") -> None:
-    """Read KEY=value lines; a trailing ' #' comment and one layer of quotes are dropped."""
+    """Read KEY=value lines; a trailing ' #' comment and one layer of quotes are dropped.
+    A .env other users can read is made private (600) first - it holds every password."""
     path = Path(path)
     if not path.exists():
         return
+    mode = path.stat().st_mode & 0o777
+    if mode & 0o077:
+        os.chmod(path, 0o600)
+        print(f"security: {path.name} was readable by other users (mode {mode:o}) - set to 600",
+              file=sys.stderr)
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line.startswith("export "):
@@ -63,6 +80,7 @@ class Settings:
     db_name: str
     db_user: str
     db_password: str = field(repr=False, default="")
+    db_ssl_ca: str = ""                # CA file to verify the DB certificate (optional)
     logins: dict[str, Login] = field(default_factory=dict)
     headless: bool = True
     timeout_s: int = 90
@@ -75,7 +93,7 @@ class Settings:
         rows = [("Database", f"{self.db_user or 'MISSING'}@{self.db_host or 'MISSING'}:"
                              f"{self.db_port}/{self.db_name or 'MISSING'}")]
         for site, lg in self.logins.items():
-            rows.append((f"{site} login", f"{lg.username or 'MISSING'} / "
+            rows.append((f"{site} login", f"{mask(lg.username) or 'MISSING'} / "
                                           f"{'password set' if lg.password else 'NO PASSWORD'}"))
         rows.append(("Browser", "headless" if self.headless else "headed (visible window)"))
         return rows
@@ -118,7 +136,7 @@ def from_env(sites: list[str], need_db: bool = True) -> Settings:
 
     s = Settings(
         db_host=db["host"], db_port=port, db_name=db["name"], db_user=db["user"],
-        db_password=db["password"], logins=logins,
+        db_password=db["password"], db_ssl_ca=env("WAREHOUSE_DB_SSL_CA"), logins=logins,
         headless=flag("HEADLESS", True),
         timeout_s=max(15, timeout_s),
         gti_include_zero_stock=flag("GTI_INCLUDE_ZERO_STOCK", True),

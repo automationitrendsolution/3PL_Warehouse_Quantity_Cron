@@ -65,7 +65,7 @@ Every Monday 06:00 (host time - IST here). `crontab -e`:
 ```
 
 The wrapper takes a lock (no overlapping runs), sets a UTF-8 locale and writes
-`logs/3pl_warehouse_YYYYMMDD.log` (kept 12 weeks). Exit status: 0 OK, 1 a portal failed,
+one log file, `logs/cron.log` (rolled over to `cron.log.1` past 10 MB). Exit status: 0 OK, 1 a portal failed,
 2 a setting is missing.
 
 ## When something breaks
@@ -81,6 +81,29 @@ The wrapper takes a lock (no overlapping runs), sets a UTF-8 locale and writes
   challenged headless Chromium, and no portal has a CAPTCHA on its login form (Tactical's
   reCAPTCHA is on the Register form only).
 
+## Security
+
+| Risk | Protection |
+| --- | --- |
+| Passwords / DB login leaked | Only in `.env` (mode 600, auto-fixed at start if looser, git-ignored). Never logged: login names are masked (`ja***@example.com`), secrets are redacted from errors. |
+| Saved login sessions stolen | `state/<portal>.json` holds live session cookies: directory 700, files 600, git-ignored. Delete a file to force a fresh login (e.g. after a password change). |
+| Password typed into the wrong site | Before every login the page must be **https** on the portal's own domain (`LOGIN_HOSTS` in each scraper) - a redirect elsewhere stops the run. |
+| Database traffic sniffed / downgraded | TLS is **required**; a plain-text connection is refused. Set `WAREHOUSE_DB_SSL_CA` to also verify the server certificate. |
+| SQL injection | Every value is a bound parameter; column names come from a fixed allow-list. |
+| Malicious text in a portal (terminal escape codes, markup) | Product codes are reduced to `A-Z 0-9 _-./#&+():,` (max 64); the screen renders portal text as plain text. |
+| Broken / tampered page wiping stock | Quantities outside -1,000,000..10,000,000 abort that portal; if a portal suddenly shows under half the products with stock it had, nothing is written (override: `--allow-big-drop`). A failed portal never touches its old figures. |
+| Compromised portal page attacking the machine | Chromium runs **with its sandbox** (the wrapper refuses to run as root), no downloads, no service workers, certificate errors are fatal. |
+| Logs / debug pages read by other users | `umask 077`: `logs/` 700, `cron.log` 600; debug HTML has hidden-input / CSRF values blanked. |
+
+**Recommended (database side):** the job currently writes with `gen_ai`, which has ALL PRIVILEGES on
+`gen_ai_db`. Give it its own account that can only touch this table, and put it in `.env` as
+`WAREHOUSE_WRITER_USER` / `WAREHOUSE_WRITER_PASSWORD`:
+
+```sql
+CREATE USER 'tpl_writer'@'%' IDENTIFIED BY '<strong password>' REQUIRE SSL;
+GRANT SELECT, INSERT, UPDATE ON gen_ai_db.`3PL_Warehouse_Quantity` TO 'tpl_writer'@'%';
+```
+
 ## Settings (`.env`)
 
 | Key | Default | |
@@ -94,7 +117,7 @@ The wrapper takes a lock (no overlapping runs), sets a UTF-8 locale and writes
 ## Layout
 
 ```text
-run_3pl_warehouse.sh       cron wrapper: lock, locale, dated log
+run_3pl_warehouse.sh       cron wrapper: lock, locale, one log (logs/cron.log)
 update_3pl_warehouse.py    entry point: runs each portal, writes, prints a summary
 warehouses/
   config.py                .env loading, settings, secret redaction

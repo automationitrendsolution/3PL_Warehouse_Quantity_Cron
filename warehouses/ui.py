@@ -7,9 +7,9 @@ Two audiences, one writer:
     activity feed. Each finished portal leaves a result card (top ASINs as bars) above it, and
     the run ends with a summary table, the table as stored in the database and a verdict;
   * run by cron - nothing fancy: every event is one timestamped plain-text line in
-    logs/3pl_warehouse_YYYYMMDD.log and logs/cron.log, which `--logs` reads back as history.
+    logs/cron.log, which `--logs` reads back as history.
 
-The log files are written in both cases, so a run by hand is in the history too.
+The log file is written in both cases, so a run by hand is in the history too.
 """
 
 from __future__ import annotations
@@ -96,12 +96,10 @@ class UI:
         self.live: Live | None = None
         self.feed: deque = deque(maxlen=9)
         LOG_DIR.mkdir(exist_ok=True)
-        self.log_path = LOG_DIR / f"{JOB}_{datetime.now():%Y%m%d}.log"
-        # Every line goes to the dated log (run history, kept 12 weeks) AND to logs/cron.log
-        # (one running file to `tail -f`), whether run by hand or by cron.
-        self.cron_log = LOG_DIR / "cron.log"
-        self._files = [open(self.log_path, "a", encoding="utf-8"),
-                       open(self.cron_log, "a", encoding="utf-8")]
+        # ONE log file, whether run by hand or by cron: logs/cron.log (the wrapper rolls it over
+        # to cron.log.1 when it passes 10 MB). `--logs` reads the run history back from it.
+        self.log_path = LOG_DIR / "cron.log"
+        self._files = [open(self.log_path, "a", encoding="utf-8")]
 
     # ── plain log files ─────────────────────────────────────────────────────────────────────
     def _write(self, level: str, msg: str) -> None:
@@ -249,7 +247,7 @@ class UI:
         t.add_column("", min_width=26)
         peak = max((q for _, q in top), default=1) or 1
         for i, ((asin, m), q) in enumerate(top, 1):
-            t.add_row(str(i), asin, m, f"{q:,}",
+            t.add_row(str(i), Text(asin), Text(m), f"{q:,}",  # Text(): portal data is never markup
                       Text("━" * max(1, round(26 * q / peak)) if q else "", style=colour))
         parts = [stats, Text(""), t]
         if non_asin:
@@ -446,7 +444,7 @@ _RESULT = re.compile(r"RESULT site=(\w+) status=(\w+)(.*)")
 
 def history(limit: int = 15, show_last: bool = True) -> int:
     console = Console(theme=THEME, highlight=False)
-    files = sorted(LOG_DIR.glob(f"{JOB}_*.log"))
+    files = [f for f in (LOG_DIR / "cron.log.1", LOG_DIR / "cron.log") if f.exists()]
     runs, cur = [], None
     for path in files:
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -474,7 +472,7 @@ def history(limit: int = 15, show_last: bool = True) -> int:
               title_justify="left")
     t.add_column("Started")
     t.add_column("Mode", style="muted")
-    for site, (name, _, colour) in PORTALS.items():
+    for site, (name, _, colour, _w) in PORTALS.items():
         t.add_column(name, justify="center", header_style=f"bold {colour}")
     t.add_column("Time", justify="right", style="muted")
     t.add_column("Result")

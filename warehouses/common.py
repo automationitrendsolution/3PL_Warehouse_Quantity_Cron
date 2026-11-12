@@ -57,20 +57,42 @@ def product_id(sku: str) -> str | None:
     asin = asin_from(sku)
     if asin:
         return asin
-    text = re.sub(r"\s+", " ", (sku or "").strip().upper())
+    return clean_code(sku)
+
+
+# Characters a product code may contain once stored. Anything else (control characters, ANSI
+# escape sequences, markup brackets, quotes) is dropped: portal text is untrusted input and is
+# also printed to the terminal and written to logs.
+_CODE_BAD = re.compile(r"[^A-Z0-9 _\-./#&+():,]")
+
+
+def clean_code(text: str) -> str | None:
+    text = re.sub(r"\s+", " ", str(text or "")).strip().upper()
+    text = _CODE_BAD.sub("", text).strip()
     return text[:64] or None
 
 
+QTY_MIN, QTY_MAX = -1_000_000, 10_000_000  # outside this a portal value is not a stock count
+
+
 def to_int(value) -> int:
-    """'1,450' -> 1450, '' / '-' / None -> 0, '12.0' -> 12."""
+    """'1,450' -> 1450, '' / '-' / None -> 0, '12.0' -> 12. Raises ScrapeError for a value that
+    cannot be a stock quantity, so a broken or tampered page is never written."""
     if value is None:
         return 0
     if isinstance(value, (int, float)):
-        return int(value)
-    text = re.sub(r"[^\d.\-]", "", str(value))
-    if text in ("", "-", ".", "-."):
-        return 0
-    return int(float(text))
+        n = int(value)
+    else:
+        text = re.sub(r"[^\d.\-]", "", str(value))
+        if text in ("", "-", ".", "-."):
+            return 0
+        try:
+            n = int(float(text))
+        except ValueError:
+            raise ScrapeError(f"quantity {str(value)[:30]!r} is not a number") from None
+    if not QTY_MIN <= n <= QTY_MAX:
+        raise ScrapeError(f"quantity {n:,} is outside {QTY_MIN:,}..{QTY_MAX:,} - page looks wrong")
+    return n
 
 
 def norm(header: str) -> str:
@@ -131,15 +153,27 @@ def new_context(browser, site: str, log=print):
     else:
         log("  no saved session yet - will log in")
     try:
-        return browser.new_context(
-            storage_state=str(state) if state.exists() else None,
-            user_agent=UA, viewport={"width": 1600, "height": 1000},
-            locale="en-US", accept_downloads=True)
+        return browser.new_context(storage_state=str(state) if state.exists() else None, **CONTEXT)
     except Exception:  # a corrupt state file must not block the run
         state.unlink(missing_ok=True)
         log("  saved session unreadable - removed, will log in")
-        return browser.new_context(user_agent=UA, viewport={"width": 1600, "height": 1000},
-                                   locale="en-US", accept_downloads=True)
+        return browser.new_context(**CONTEXT)
+
+
+# Least capability: no file downloads, no service workers, certificate errors are fatal.
+CONTEXT = dict(user_agent=UA, viewport={"width": 1600, "height": 1000}, locale="en-US",
+               accept_downloads=False, ignore_https_errors=False, service_workers="block")
+
+
+def assert_host(page, allowed: tuple[str, ...], site: str) -> None:
+    """Never type a password into a page that is not the portal's own HTTPS login: a redirect
+    to another site (phishing, hijacked DNS, a changed portal) stops the run instead."""
+    from urllib.parse import urlparse
+    u = urlparse(page.url)
+    host = (u.hostname or "").lower()
+    if u.scheme != "https" or not any(host == a or host.endswith("." + a) for a in allowed):
+        raise ScrapeError(f"refusing to send {site} credentials to {u.scheme}://{host} - "
+                          f"expected https on {', '.join(allowed)}")
 
 
 def save_state(ctx, site: str) -> None:
@@ -176,13 +210,25 @@ def dump(page, site: str, label: str, log=print) -> None:
     """Screenshot + HTML of the current page, for fixing a selector after a failed run."""
     try:
         DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(DEBUG_DIR, 0o700)
         stem = DEBUG_DIR / f"{datetime.now():%Y%m%d_%H%M%S}_{site}_{label}"
         page.screenshot(path=f"{stem}.png", full_page=True)
-        Path(f"{stem}.html").write_text(page.content(), encoding="utf-8")
+        Path(f"{stem}.html").write_text(_redact_html(page.content()), encoding="utf-8")
+        for ext in (".png", ".html"):
+            os.chmod(f"{stem}{ext}", 0o600)
         log(f"  debug: saved {stem}.png / .html  (url: {page.url.split('?')[0]})")
     except Exception as exc:  # a dump must never hide the real error
         log(f"  debug: could not save page ({exc.__class__.__name__})")
     _prune(keep=60)
+
+
+def _redact_html(html: str) -> str:
+    """Blank the value of hidden and password inputs (CSRF tokens, session ids) and meta CSRF."""
+    html = re.sub(r'(<input\b[^>]*\btype="(?:hidden|password)"[^>]*\bvalue=")[^"]*(")', r"\1[redacted]\2",
+                  html, flags=re.I)
+    html = re.sub(r'(<input\b[^>]*\bvalue=")[^"]*("[^>]*\btype="(?:hidden|password)")', r"\1[redacted]\2",
+                  html, flags=re.I)
+    return re.sub(r'(<meta\b[^>]*name="csrf-[^"]*"[^>]*content=")[^"]*(")', r"\1[redacted]\2", html, flags=re.I)
 
 
 def _prune(keep: int) -> None:

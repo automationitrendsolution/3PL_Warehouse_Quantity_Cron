@@ -10,9 +10,10 @@ left as the page loads.
 
 from __future__ import annotations
 
-from .common import goto, logged_in, Result, ScrapeError, dump, find_col, read_datatable, visible, wait_quiet
+from .common import assert_host, goto, logged_in, Result, ScrapeError, dump, find_col, read_datatable, visible, wait_quiet
 
 SITE = "tactical"
+LOGIN_HOSTS = ("tacticalwarehousing.com",)  # credentials are only ever typed on these (https)
 COLUMN = "tatical_qty"
 MARKETS = ("US",)
 BASE = "https://tacticalwarehousing.com"
@@ -32,6 +33,7 @@ def login(page, creds, log=print) -> None:
     if not visible(page, "#email", timeout_ms=15000):
         page.get_by_role("button", name="Login/Register").first.click()
     page.locator("#email").first.wait_for(state="visible", timeout=30000)
+    assert_host(page, LOGIN_HOSTS, SITE)
     page.locator("#email").first.fill(creds.username)
     page.locator("#pwd").first.fill(creds.password)
     page.locator("#m_login_signin_submit").first.click()

@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import re
 
-from .common import goto, logged_in, Result, ScrapeError, dump, find_col, read_datatable, visible, wait_quiet
+from .common import assert_host, goto, logged_in, Result, ScrapeError, dump, find_col, read_datatable, visible, wait_quiet
 
 SITE = "gti"
+LOGIN_HOSTS = ("gti-co.com",)  # credentials are only ever typed on these (https)
 COLUMN = "gti_qty"
 MARKETS = ("CA",)
 ENTRY_URL = "https://ims.gti-co.com/view-users.php"  # redirects to mygti.gti-co.com
@@ -22,6 +23,7 @@ LOGIN_FIELD = 'input[name="form-username"]'
 
 def login(page, creds, log=print) -> None:
     log("  logging in")
+    assert_host(page, LOGIN_HOSTS, SITE)
     page.locator(LOGIN_FIELD).first.fill(creds.username)
     page.locator('input[name="form-password"]').first.fill(creds.password)
     page.locator('form button[type="submit"]').first.click()
