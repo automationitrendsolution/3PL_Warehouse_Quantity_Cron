@@ -100,6 +100,32 @@ def _frame(page):
     return frame
 
 
+def _dom_click(locator) -> None:
+    """A click dispatched on the element itself: Extensiv's slide-out menu sometimes sits under
+    the Find Orders panel, and a pointer click there is intercepted by the panel."""
+    locator.evaluate("e => e.click()")
+
+
+def _open_manage_inventory(fl, log=print) -> None:
+    """Inventory -> Manage Inventory, retried until the inventory grid's SKU cells appear."""
+    for attempt in range(1, 4):
+        menu = fl.get_by_text(re.compile(r"^\s*Inventory\s*$")).filter(visible=True).first
+        menu.wait_for(state="visible", timeout=90000)
+        if attempt == 1:
+            log("  opening Inventory → Manage Inventory")
+        _dom_click(menu)
+        manage = fl.get_by_text(re.compile(r"^\s*Manage Inventory\s*$", re.I)).first
+        manage.wait_for(state="attached", timeout=30000)
+        _dom_click(manage)
+        try:
+            fl.locator('td[data-field="Sku"]').filter(visible=True).first.wait_for(timeout=45000)
+            return
+        except Exception:
+            if attempt == 3:
+                raise
+            log(f"  Manage Inventory did not open - retry {attempt}/2")
+
+
 def scrape(ctx, settings, log=print) -> Result:
     page = ctx.new_page()
     goto(page, HUB_URL, log)
@@ -111,14 +137,7 @@ def scrape(ctx, settings, log=print) -> Result:
         log("  opening 3PL Warehouse Manager")
         goto(page, WMS_URL, log)
         fl = page.frame_locator(IFRAME)
-        menu = fl.get_by_text(re.compile(r"^\s*Inventory\s*$")).filter(visible=True).first
-        menu.wait_for(state="visible", timeout=90000)
-        log("  opening Inventory → Manage Inventory")
-        menu.click()
-        manage = fl.get_by_text(re.compile(r"^\s*Manage Inventory\s*$", re.I)).filter(visible=True).first
-        manage.wait_for(state="visible", timeout=30000)
-        manage.click()
-        fl.locator('td[data-field="Sku"]').filter(visible=True).first.wait_for(timeout=90000)
+        _open_manage_inventory(fl, log)
         wait_quiet(page, 20000)
         frame = _frame(page)
         rows, expected = _collect_grid(frame, log)
@@ -167,7 +186,7 @@ def _collect_grid(frame, log=print) -> tuple[dict[str, tuple[str, str]], int | N
     counting) until the count matches the grid's RESULTS line, or nothing new appears."""
     rows: dict[str, tuple[str, str]] = {}
     body = frame.locator(GRID_BODY).filter(visible=True).first
-    body.hover()
+    body.hover(force=True)  # an overlapping panel must not block the wheel scroll
     mouse = frame.page.mouse
     mouse.wheel(0, -100000)  # start at the top
     frame.page.wait_for_timeout(1000)

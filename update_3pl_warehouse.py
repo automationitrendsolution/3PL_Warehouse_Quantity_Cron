@@ -101,6 +101,17 @@ def main() -> int:
                 if not res.qty:
                     raise ScrapeError(f"no products found in {res.rows_read} rows - not writing, "
                                       f"the last good figures stay")
+                if res.non_asin and s.db_host and s.db_user:
+                    try:
+                        fixed = db.resolve_codes(s, sorted(res.non_asin))
+                    except Exception as exc:
+                        fixed = {}
+                        view.log(f"ASIN repair skipped ({redact(str(exc), s.secrets)[:80]})")
+                    if fixed:
+                        res.remap(fixed)
+                        sample = ", ".join(f"{k} → {v}" for k, v in list(fixed.items())[:4])
+                        view.log(f"repaired {len(fixed)} code(s) to their real ASIN via "
+                                 f"{db.SOURCE_TABLE}: {sample}{' …' if len(fixed) > 4 else ''}")
                 view.log(f"{res.rows_read} rows → {len(res.qty)} products, "
                          f"total qty {sum(res.qty.values()):,}")
                 if res.non_asin:

@@ -14,6 +14,7 @@ its last good figures stay. Rows are never deleted.
 
 from __future__ import annotations
 
+import re
 import time
 
 import pymysql
@@ -148,3 +149,60 @@ def summary(s: Settings) -> list[tuple]:
             return list(cur.fetchall())
     finally:
         conn.close()
+
+
+# ── code -> ASIN repair ─────────────────────────────────────────────────────────────────────
+# Portals sometimes hold a code that is not an ASIN: an FNSKU (X004Y551MF) or a mistyped ASIN
+# with one character missing (GTI's ITR-B01VNK9DB = B0B1VNK9DB). The Amazon FBA inventory table
+# kept by the amazon_fba_inventory cron job knows the real ASINs; a code is repaired only when
+# exactly ONE ASIN fits - otherwise it stays as it is.
+FNSKU_RE = re.compile(r"^X0[0-9A-Z]{8}$")
+NEAR_ASIN_RE = re.compile(r"^B[0-9A-Z]{8}$")   # 9 characters: one short of an ASIN
+SOURCE_TABLE = "amazon_fba_inventory"
+
+
+def _one_insert(short: str, full: str) -> bool:
+    return len(full) == len(short) + 1 and any(full[:i] + full[i + 1:] == short
+                                               for i in range(len(full)))
+
+
+def resolve_codes(s: Settings, codes: list[str]) -> dict[str, str]:
+    """{portal code: ASIN} for the codes that can be matched to exactly one real ASIN."""
+    want_fnsku, want_near = {}, {}
+    for code in codes:
+        for part in [code, *re.split(r"[-_\s/]+", code)]:
+            if FNSKU_RE.match(part):
+                want_fnsku.setdefault(code, part)
+            elif NEAR_ASIN_RE.match(part):
+                want_near.setdefault(code, part)
+    if not want_fnsku and not want_near:
+        return {}
+    conn = connect(s)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM information_schema.tables "
+                        "WHERE table_schema = DATABASE() AND table_name = %s", (SOURCE_TABLE,))
+            if not cur.fetchone()[0]:
+                return {}
+            cur.execute(f"SELECT DISTINCT asin, fnsku FROM `{SOURCE_TABLE}` "
+                        f"WHERE asin IS NOT NULL AND asin <> ''")
+            pairs = [(a.upper(), (f or "").upper()) for a, f in cur.fetchall()]
+    finally:
+        conn.close()
+    by_fnsku: dict[str, set[str]] = {}
+    for a, f in pairs:
+        if f:
+            by_fnsku.setdefault(f, set()).add(a)
+    asins = {a for a, _ in pairs if len(a) == 10}
+    out = {}
+    for code, f in want_fnsku.items():
+        hits = by_fnsku.get(f, set())
+        if len(hits) == 1:
+            out[code] = next(iter(hits))
+    for code, near in want_near.items():
+        if code in out:
+            continue
+        hits = [a for a in asins if a.startswith("B0") and _one_insert(near, a)]
+        if len(hits) == 1:
+            out[code] = hits[0]
+    return out

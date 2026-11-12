@@ -161,8 +161,12 @@ class UI:
     # ── live dashboard ──────────────────────────────────────────────────────────────────────
     def __enter__(self):
         if self.tty:
-            self.live = Live(console=self.console, refresh_per_second=12, transient=True,
-                             get_renderable=self._render, redirect_stdout=False)
+            # The board is sized to the terminal on every refresh (see _render) and cropped as a
+            # last resort: a live area taller than the screen cannot be redrawn in place and
+            # leaves stacked copies behind.
+            self.live = Live(console=self.console, refresh_per_second=8, transient=True,
+                             get_renderable=self._render, redirect_stdout=False,
+                             vertical_overflow="crop")
             self.live.__enter__()
         return self
 
@@ -283,79 +287,94 @@ class UI:
                              padding=(1, 2)))
 
     def _render(self, final: bool = False):
+        """The live board, fitted to the terminal: never taller than the screen (the activity
+        feed shrinks / disappears first) and never wider (less important columns drop out)."""
+        width, height = self.console.size
         done = sum(1 for s in self.state.values() if s.status in ("ok", "dry", "failed"))
         failed = sum(1 for s in self.state.values() if s.status == "failed")
         secs = int(time.monotonic() - self.t0)
+        show_progress, show_products, show_rows = width >= 104, width >= 90, width >= 78
 
-        t = Table(box=box.SIMPLE_HEAVY, show_edge=False, header_style="dim2", expand=True,
-                  pad_edge=False, row_styles=["", ""])
+        t = Table(box=box.SIMPLE_HEAD, show_edge=False, header_style="dim2", expand=True,
+                  pad_edge=False, padding=(0, 1))
         t.add_column("", width=2, no_wrap=True)
-        t.add_column("PORTAL", min_width=16, no_wrap=True)
-        t.add_column("MKT", style="muted", no_wrap=True)
-        t.add_column("STEP", ratio=3, overflow="ellipsis", no_wrap=True)
-        t.add_column("PROGRESS", width=18, no_wrap=True)
-        t.add_column("ROWS", justify="right", no_wrap=True)
-        t.add_column("PRODUCTS", justify="right", no_wrap=True)
-        t.add_column("QTY", justify="right", no_wrap=True)
-        t.add_column("TIME", justify="right", style="muted", no_wrap=True)
+        t.add_column("PORTAL", width=16, no_wrap=True, overflow="ellipsis")
+        t.add_column("MKT", width=7, no_wrap=True, style="muted")
+        t.add_column("STEP", ratio=1, min_width=10, no_wrap=True, overflow="ellipsis")
+        if show_progress:
+            t.add_column("PROGRESS", width=15, no_wrap=True)
+        if show_rows:
+            t.add_column("ROWS", width=6, justify="right", no_wrap=True)
+        if show_products:
+            t.add_column("PRODUCTS", width=8, justify="right", no_wrap=True)
+        t.add_column("QTY", width=9, justify="right", no_wrap=True)
+        t.add_column("TIME", width=5, justify="right", no_wrap=True, style="muted")
         for site in self.sites:
             st = self.state[site]
             name, mkt, colour, _ = PORTALS[site]
             icon = {"waiting": Text("○", style="dim2"), "ok": Text("✔", style="ok"),
                     "dry": Text("✔", style="warn"), "failed": Text("✖", style="fail")
-                    }.get(st.status) or Spinner("dots12", style=colour)
+                    }.get(st.status) or Spinner("dots", style=colour)
             step_style = {"failed": "#fca5a5", "waiting": "dim2", "ok": "#a7f3d0",
                           "dry": "#fde68a"}.get(st.status, "#e2e8f0")
-            if st.status == "running" and st.total_n:
-                pct = min(st.done_n or 0, st.total_n) * 100 // st.total_n
-                progress = Table.grid(padding=(0, 1))
-                progress.add_column()
-                progress.add_column(justify="right")
-                progress.add_row(ProgressBar(total=st.total_n, completed=min(st.done_n or 0, st.total_n),
-                                             width=12, complete_style=colour, finished_style=colour,
-                                             style="#1e293b"),
-                                 Text(f"{pct}%", style=colour))
-            elif st.status in ("ok", "dry"):
-                progress = ProgressBar(total=1, completed=1, width=12, complete_style=colour,
-                                       finished_style=colour)
-            elif st.status == "running":
-                progress = ProgressBar(total=None, width=12, pulse=True, complete_style=colour,
-                                       finished_style=colour, pulse_style=colour, style="#1e293b")
-            else:
-                progress = Text("")
-            name_style = f"bold {colour}" if st.status != "waiting" else "dim2"
-            t.add_row(icon, Text(name, style=name_style), mkt, Text(st.step, style=step_style),
-                      progress, self._opt(st.rows), self._opt(st.asins), self._opt(st.qty, colour),
-                      st.elapsed)
+            row = [icon, Text(name, style=f"bold {colour}" if st.status != "waiting" else "dim2"),
+                   Text(mkt), Text(st.step, style=step_style)]
+            if show_progress:
+                row.append(self._progress_cell(st, colour))
+            if show_rows:
+                row.append(self._opt(st.rows))
+            if show_products:
+                row.append(self._opt(st.asins))
+            row += [self._opt(st.qty, colour), Text(st.elapsed)]
+            t.add_row(*row)
 
         overall = ProgressBar(total=len(self.sites), completed=done, width=None,
-                              complete_style="#38bdf8", finished_style="#f87171" if failed else "#34d399",
-                              style="#1e293b")
-        status = Text.assemble(
-            (f" {done}/{len(self.sites)} portals ", "bold #e2e8f0"),
-            (f"· {failed} failed " if failed else "", "fail"),
-            (f"· {_fmt_secs(secs)} elapsed", "muted"))
-        top = Table.grid(expand=True)
-        top.add_column(ratio=1)
-        top.add_column(no_wrap=True)
-        top.add_row(overall, status)
-
-        parts = [top, Text(""), t]
-        if not final and self.feed:
-            feed = Table.grid(padding=(0, 1))
-            feed.add_column(style="dim2", no_wrap=True)
-            feed.add_column(no_wrap=True)
-            feed.add_column(overflow="ellipsis", no_wrap=True)
-            for ts, site, msg, kind in self.feed:
+                              complete_style="#38bdf8",
+                              finished_style="#f87171" if failed else "#34d399", style="#1e293b")
+        bar = Table.grid(expand=True)  # own row: a bare bar would swallow the next line
+        bar.add_column(ratio=1)
+        bar.add_row(overall)
+        parts = [bar, t]
+        # height budget: panel border 2 + bar 1 + table header 2 + one line per portal
+        fixed = 2 + 1 + 2 + len(self.sites)
+        room = height - fixed - 3            # keep a little space for the prompt / cursor
+        feed_lines = 0 if final else max(0, min(6, room - 1))
+        if feed_lines >= 2 and self.feed:
+            feed = Table.grid(padding=(0, 1), expand=True)
+            feed.add_column(width=8, no_wrap=True, style="dim2")
+            feed.add_column(width=16, no_wrap=True, overflow="ellipsis")
+            feed.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+            for ts, site, msg, kind in list(self.feed)[-(feed_lines - 1):]:
                 name, _, colour, _ = PORTALS.get(site or "", ("", "", "#94a3b8", ""))
                 style = {"ok": "#a7f3d0", "fail": "#fca5a5", "warn": "#fde68a",
                          "start": "bold #e2e8f0"}.get(kind, "#cbd5e1")
-                feed.add_row(ts, Text(f"{name:<16}", style=colour), Text(msg, style=style))
-            parts += [Rule(Text(" activity ", style="dim2"), style=BORDER), feed]
+                feed.add_row(ts, Text(name, style=colour), Text(msg, style=style))
+            parts += [Rule(Text("activity", style="dim2"), style=BORDER, characters="─"), feed]
         title = Text.assemble(("● " if not final else "■ ", "#34d399" if not final else "dim2"),
-                              ("LIVE" if not final else "RUN BOARD", "bold #e2e8f0"))
+                              ("LIVE" if not final else "RUN BOARD", "bold #e2e8f0"),
+                              (f"  {done}/{len(self.sites)} portals", "#e2e8f0"),
+                              (f" · {failed} failed" if failed else "", "fail"),
+                              (f" · {_fmt_secs(secs)}", "muted"))
         return Panel(Group(*parts), title=title, title_align="left", border_style=BORDER,
-                     box=box.ROUNDED, padding=(1, 2))
+                     box=box.ROUNDED, padding=(0, 1), width=width)
+
+    def _progress_cell(self, st, colour):
+        if st.status == "running" and st.total_n:
+            done = min(st.done_n or 0, st.total_n)
+            cell = Table.grid(padding=(0, 1))
+            cell.add_column(width=10)
+            cell.add_column(width=4, justify="right")
+            cell.add_row(ProgressBar(total=st.total_n, completed=done, width=10,
+                                     complete_style=colour, finished_style=colour, style="#1e293b"),
+                         Text(f"{done * 100 // st.total_n}%", style=colour))
+            return cell
+        if st.status in ("ok", "dry"):
+            return ProgressBar(total=1, completed=1, width=10, complete_style=colour,
+                               finished_style=colour)
+        if st.status == "running":
+            return ProgressBar(total=None, width=10, pulse=True, complete_style=colour,
+                               finished_style=colour, pulse_style=colour, style="#1e293b")
+        return Text("")
 
     @staticmethod
     def _opt(v: int | None, colour: str | None = None) -> Text:

@@ -133,6 +133,16 @@ class Result:
             self.non_asin[key] = self.non_asin.get(key, 0) + 1
         self.qty[(key, market)] += to_int(qty)
 
+    def remap(self, mapping: dict[str, str]) -> None:
+        """Move quantities from repaired codes to their real ASIN (adding up where both exist)."""
+        if not mapping:
+            return
+        new: dict[tuple[str, str], int] = defaultdict(int)
+        for (key, mkt), q in self.qty.items():
+            new[(mapping.get(key, key), mkt)] += q
+        self.qty = new
+        self.non_asin = {k: n for k, n in self.non_asin.items() if k not in mapping}
+
 
 # ── Browser plumbing ─────────────────────────────────────────────────────────────────────────
 
