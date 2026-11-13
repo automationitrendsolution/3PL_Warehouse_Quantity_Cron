@@ -92,7 +92,7 @@ one log file, `logs/cron.log` (rolled over to `cron.log.1` past 10 MB). Exit sta
 | SQL injection | Every value is a bound parameter; column names come from a fixed allow-list. |
 | Malicious text in a portal (terminal escape codes, markup) | Product codes are reduced to `A-Z 0-9 _-./#&+():,` (max 64); the screen renders portal text as plain text. |
 | Broken / tampered page wiping stock | Quantities outside -1,000,000..10,000,000 abort that portal; if a portal suddenly shows under half the products with stock it had, nothing is written (override: `--allow-big-drop`). A failed portal never touches its old figures. |
-| Compromised portal page attacking the machine | Chromium runs **with its sandbox** (the wrapper refuses to run as root), no downloads, no service workers, certificate errors are fatal. |
+| Compromised portal page attacking the machine | Chromium runs **with its sandbox** as a normal user (as root the sandbox cannot start, so it is launched with `--no-sandbox`), no downloads, no service workers, certificate errors are fatal. |
 | Logs / debug pages read by other users | `umask 077`: `logs/` 700, `cron.log` 600; debug HTML has hidden-input / CSRF values blanked. |
 
 **Recommended (database side):** the job currently writes with `gen_ai`, which has ALL PRIVILEGES on

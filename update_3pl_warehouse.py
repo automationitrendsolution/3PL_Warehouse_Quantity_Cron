@@ -23,6 +23,7 @@ others. Exit status: 0 all good, 1 at least one portal failed, 2 configuration e
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import traceback
 
@@ -84,12 +85,13 @@ def main() -> int:
 
     failed = []
     with view, sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel="chromium", headless=s.headless,
-            # Chromium's sandbox stays ON (it isolates a compromised page from this machine);
-            # it only works as a normal user, so running as root is refused in the wrapper.
-            args=["--disable-blink-features=AutomationControlled",
-                  "--disable-http2"])  # GTI's server drops HTTP/2 streams
+        launch_args = ["--disable-blink-features=AutomationControlled",
+                       "--disable-http2"]  # GTI's server drops HTTP/2 streams
+        # Chromium's sandbox (it isolates a compromised page from this machine) stays ON for a
+        # normal user. It cannot start under root, so only then is it switched off.
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            launch_args.append("--no-sandbox")
+        browser = p.chromium.launch(channel="chromium", headless=s.headless, args=launch_args)
         for site in sites:
             mod = SCRAPERS[site]
             view.start(site, mod.COLUMN, mod.MARKETS)

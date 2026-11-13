@@ -9,10 +9,8 @@ cd "$JOB_DIR"
 
 # Everything this job creates (logs, saved sessions, debug pages) is private to its user.
 umask 077
-if [[ $EUID -eq 0 ]]; then
-  echo "refusing to run as root: run as a normal user (Chromium's sandbox needs it)" >&2
-  exit 2
-fi
+# Running as root is allowed: Chromium's sandbox cannot start under root, so the Python side
+# launches it with --no-sandbox in that case (and keeps the sandbox on for a normal user).
 
 export LANG="${LANG:-C.UTF-8}" LC_ALL="${LC_ALL:-C.UTF-8}" PYTHONIOENCODING=utf-8
 # Cron's HOME is set, so Playwright finds its browsers in ~/.cache/ms-playwright as usual.
